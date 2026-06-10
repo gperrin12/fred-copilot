@@ -230,29 +230,35 @@ export async function runFredAgent(question: string): Promise<AgentResult> {
     // The pattern is identical — tool results go back as user messages.
 
     if (response.stop_reason === "tool_use") {
-      const toolUseBlocks = response.content.filter((block) => block.type === "tool_use");
-    
-      const toolResults = await Promise.all(
-        toolUseBlocks.map((block) =>
-          runTool(block.name, block.input as Record<string, string>)
-        )
+      const toolUseBlocks = response.content.filter(
+        (block) => block.type === "tool_use"
       );
-    
+
+      const toolResults = await Promise.all(
+        toolUseBlocks.map(async (block) => {
+          toolCalls.push({
+            tool: block.name,
+            input: block.input as Record<string, unknown>,
+          });
+          return runTool(block.name, block.input as Record<string, string>);
+        })
+      );
+
+      // Anthropic requires the assistant's tool_use message immediately before tool_results.
+      messages.push({ role: "assistant", content: response.content });
       messages.push({
         role: "user",
         content: toolUseBlocks.map((block, i) => ({
           type: "tool_result" as const,
           tool_use_id: block.id,
           content: toolResults[i],
-        }))
+        })),
       });
+
+      continue;
     }
 
-    // Handle unexpected stop reasons with a clear error
-
-    if (response.stop_reason !== "tool_use") {
-      throw new Error(`Unexpected stop_reason: ${response.stop_reason}`);
-    }
+    throw new Error(`Unexpected stop_reason: ${response.stop_reason}`);
 
   }
 
