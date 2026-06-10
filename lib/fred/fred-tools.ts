@@ -67,6 +67,18 @@ export interface ReleaseSeriesResult {
   units: string;
 }
 
+// ─── Shared helpers ────────────────────────────────────────────────────────
+
+function getFredApiKey(): string {
+  const apiKey = process.env.FRED_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error(
+      "FRED_API_KEY is not set. Add it to .env (local) or Vercel environment variables."
+    );
+  }
+  return apiKey;
+}
+
 // ─── Tool implementations ──────────────────────────────────────────────────
 
 /**
@@ -84,7 +96,7 @@ export async function searchSeries(query: string): Promise<SeriesSearchResult[]>
     search_text: query,
     limit: "10",
     file_type: "json",
-    api_key: process.env.FRED_API_KEY ?? "",
+    api_key: getFredApiKey(),
   });
 
   // 2. Hit the series/search endpoint — full-text search across titles, units, tags, etc.
@@ -92,22 +104,22 @@ export async function searchSeries(query: string): Promise<SeriesSearchResult[]>
     `https://api.stlouisfed.org/fred/series/search?${params}`
   );
 
-  // 3. HTTP-level failure (bad key, rate limit, server error).
-  if (!response.ok) {
-    throw new Error(`FRED API error: ${response.status} ${response.statusText}`);
-  }
-
   const data = (await response.json()) as {
     seriess?: FredSeries[];
     error_message?: string;
   };
 
-  // 4. FRED returns 200 with an error_message body for invalid params, etc.
+  if (!response.ok) {
+    throw new Error(
+      `FRED API error: ${response.status} ${data.error_message ?? response.statusText}`
+    );
+  }
+
   if (data.error_message) {
     throw new Error(`FRED API error: ${data.error_message}`);
   }
 
-  // 5. Matches live in data.seriess (double-s — FRED API quirk).
+  // 3. Matches live in data.seriess (double-s — FRED API quirk).
   //    Empty array means no matches; that's valid, not an error.
   if (!data.seriess?.length) {
     return [];
@@ -138,21 +150,23 @@ export async function getSeriesInfo(seriesId: string): Promise<SeriesInfo> {
   const params = new URLSearchParams({
     series_id: seriesId,
     file_type: "json",
-    api_key: process.env.FRED_API_KEY ?? "",
+    api_key: getFredApiKey(),
   });
 
   const response = await fetch(
     `https://api.stlouisfed.org/fred/series?${params}`
   );
 
-  if (!response.ok) {
-    throw new Error(`FRED API error: ${response.status} ${response.statusText}`);
-  }
-
   const data = (await response.json()) as {
     seriess?: FredSeries[];
     error_message?: string;
   };
+
+  if (!response.ok) {
+    throw new Error(
+      `FRED API error: ${response.status} ${data.error_message ?? response.statusText}`
+    );
+  }
 
   if (data.error_message) {
     throw new Error(`FRED API error: ${data.error_message}`);
@@ -200,11 +214,15 @@ export async function getSeriesData(
 ): Promise<SeriesObservation[]> {
   // 1. Build params. observation_start/end filter the *economic time period*
   //    (not realtime_start/end, which control revision vintages — we ignore those).
+  if (!observationStart) {
+    throw new Error("observation_start is required for get_series_data");
+  }
+
   const params = new URLSearchParams({
     series_id: seriesId,
     observation_start: observationStart,
     file_type: "json",
-    api_key: process.env.FRED_API_KEY ?? "",
+    api_key: getFredApiKey(),
   });
 
   // 2. Only send observation_end when the agent specified one.
@@ -217,14 +235,16 @@ export async function getSeriesData(
     `https://api.stlouisfed.org/fred/series/observations?${params}`
   );
 
-  if (!response.ok) {
-    throw new Error(`FRED API error: ${response.status} ${response.statusText}`);
-  }
-
   const data = (await response.json()) as {
     observations?: FredObservation[];
     error_message?: string;
   };
+
+  if (!response.ok) {
+    throw new Error(
+      `FRED API error: ${response.status} ${data.error_message ?? response.statusText}`
+    );
+  }
 
   if (data.error_message) {
     throw new Error(`FRED API error: ${data.error_message}`);
@@ -258,21 +278,23 @@ export async function getRelease(releaseId: string): Promise<ReleaseSeriesResult
     release_id: releaseId,
     limit: "20",
     file_type: "json",
-    api_key: process.env.FRED_API_KEY ?? "",
+    api_key: getFredApiKey(),
   });
 
   const response = await fetch(
     `https://api.stlouisfed.org/fred/release/series?${params}`
   );
 
-  if (!response.ok) {
-    throw new Error(`FRED API error: ${response.status} ${response.statusText}`);
-  }
-
   const data = (await response.json()) as {
     seriess?: FredSeries[];
     error_message?: string;
   };
+
+  if (!response.ok) {
+    throw new Error(
+      `FRED API error: ${response.status} ${data.error_message ?? response.statusText}`
+    );
+  }
 
   if (data.error_message) {
     throw new Error(`FRED API error: ${data.error_message}`);
