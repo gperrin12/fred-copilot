@@ -43,7 +43,8 @@ const MODEL = process.env.CLAUDE_MODEL ?? "claude-sonnet-4-6";
 const tools: Anthropic.Tool[] = [
   {
     name: "search_series",
-    description: "Search for series in FRED",
+    description:
+      "Search the FRED catalog by keyword when the correct series_id is uncertain. Always call this before get_series_info or get_series_data if the user did not provide an exact series ID. Never guess a series_id — use this tool to find candidates, then pick the best match from the results.",
     input_schema: {
       type: "object",
       properties: {
@@ -140,14 +141,24 @@ async function runTool(
   name: string,
   input: Record<string, string>
 ): Promise<string> {
-  // TODO: Implement the switch statement dispatching to the four tool functions.
-  // All results should be JSON.stringify'd before returning.
-  //
-  // Handle the unknown tool case — throw a clear error message.
-  // The agent shouldn't call tools that don't exist, but if it does,
-  // a clear error is more useful than a silent undefined.
-
-  throw new Error(`Tool not implemented: ${name}`);
+  switch (name) {
+    case "search_series":
+      return JSON.stringify(await searchSeries(input.query));
+    case "get_series_info":
+      return JSON.stringify(await getSeriesInfo(input.series_id));
+    case "get_series_data":
+      return JSON.stringify(
+        await getSeriesData(
+          input.series_id,
+          input.observation_start,
+          input.observation_end
+        )
+      );
+    case "get_release":
+      return JSON.stringify(await getRelease(input.release_id));
+    default:
+      return `Unknown tool: ${name}`;
+  }
 }
 
 // ─── Agent loop ────────────────────────────────────────────────────────────
