@@ -19,7 +19,7 @@ import {
   getSeriesInfo,
   getSeriesData,
   getRelease,
-} from "./fred-tools";
+} from "@/lib/fred/fred-tools";
 
 const client = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -41,26 +41,93 @@ const MODEL = process.env.CLAUDE_MODEL ?? "claude-sonnet-4-6";
 // Reference nl2sql-nyc's lib/sql-agent/run.ts for the exact TypeScript type structure.
 
 const tools: Anthropic.Tool[] = [
-  // TODO: search_series tool definition
-  // TODO: get_series_info tool definition
-  // TODO: get_series_data tool definition
-  // TODO: get_release tool definition
+  {
+    name: "search_series",
+    description: "Search for series in FRED",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "The query to search for" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "get_series_info",
+    description: "Get information about a series in FRED",
+    input_schema: {
+      type: "object",
+      properties: {
+        series_id: { type: "string", description: "The ID of the series to get information about" },
+      },
+      required: ["series_id"],
+    },
+  },
+  {
+    name: "get_series_data",
+    description: "Fetch time series observations for a known series. Call get_series_info first to confirm units and frequency.",
+    input_schema: {
+      type: "object",
+      properties: {
+        series_id: { type: "string", description: "The FRED series ID (e.g. FEDFUNDS, UNRATE)" },
+        observation_start: {
+          type: "string",
+          description: "Start of the observation period in YYYY-MM-DD format",
+        },
+        observation_end: {
+          type: "string",
+          description: "End of the observation period in YYYY-MM-DD format. Omit to fetch through the latest available observation.",
+        },
+      },
+      required: ["series_id", "observation_start"],
+    },
+  },
+  {
+    name: "get_release",
+    description: "Get information about a release in FRED",
+    input_schema: {
+      type: "object",
+      properties: {
+        release_id: { type: "string", description: "The ID of the release to get information about" },
+      },
+      required: ["release_id"],
+    },
+  },
 ];
 
 // ─── System prompt ─────────────────────────────────────────────────────────
 
-// TODO: Write a system prompt that:
-//   1. Describes the agent's role (financial data analyst using FRED)
-//   2. Lists the available tools and their purpose
-//   3. States the disambiguation rule explicitly: always call search_series
-//      first for ambiguous terms; never guess series IDs
-//   4. Lists at least 8-10 common series IDs for reference
-//      (FEDFUNDS, UNRATE, CPIAUCSL, GDPC1, DGS10, DGS2, T10Y2Y, MORTGAGE30US,
-//       DRCCLACBS, INDPRO)
-//   5. Instructs the agent to always state which series it used and why
+const SYSTEM_PROMPT = ` You are a financial data analyst using FRED to answer questions about economic data.
+You have the following tools available to you:
+- search_series: Search for series in FRED
+- get_series_info: Get information about a series in FRED
+- get_series_data: Get data for a series in FRED
+- get_release: Get information about a release in FRED
 
-const SYSTEM_PROMPT = `
-// TODO: Write the system prompt here
+You must always call search_series first for ambiguous terms.
+You must never guess series IDs.
+
+Here are some common series IDs for reference:
+- FEDFUNDS: Federal Funds Rate
+- UNRATE: Unemployment Rate
+- CPIAUCSL: Consumer Price Index for All Urban Consumers
+- GDPC1: Gross Domestic Product
+- DGS10: 10-Year Treasury Yield
+- DGS2: 2-Year Treasury Yield
+- T10Y2Y: 10-Year Treasury Yield - 2-Year Treasury Yield
+- MORTGAGE30US: 30-Year Mortgage Rate
+- DRCCLACBS: Domestic Residential Construction (Current Dollars)
+- INDPRO: Industrial Production
+
+Always state which series you used and why.
+
+Example:
+User: What has happened to the federal funds rate since 2020?
+Assistant: The federal funds rate has increased from 2% to 5% since 2020. I used the series FEDFUNDS.
+
+User: How does unemployment compare to pre-pandemic levels?
+Assistant: Unemployment is currently 3.5%, which is 1% lower than pre-pandemic levels. I used the series UNRATE.
+
 `;
 
 // ─── Tool execution router ─────────────────────────────────────────────────
