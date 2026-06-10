@@ -78,6 +78,8 @@ export interface ReleaseSeriesResult {
  * Note: the response field is `seriess` (double-s). Yes, really.
  */
 export async function searchSeries(query: string): Promise<SeriesSearchResult[]> {
+  // 1. Build query params. URLSearchParams encodes spaces/special chars in the query.
+  //    limit=10 caps results so the agent gets enough candidates without token bloat.
   const params = new URLSearchParams({
     search_text: query,
     limit: "10",
@@ -85,10 +87,12 @@ export async function searchSeries(query: string): Promise<SeriesSearchResult[]>
     api_key: process.env.FRED_API_KEY ?? "",
   });
 
+  // 2. Hit the series/search endpoint — full-text search across titles, units, tags, etc.
   const response = await fetch(
     `https://api.stlouisfed.org/fred/series/search?${params}`
   );
 
+  // 3. HTTP-level failure (bad key, rate limit, server error).
   if (!response.ok) {
     throw new Error(`FRED API error: ${response.status} ${response.statusText}`);
   }
@@ -98,15 +102,19 @@ export async function searchSeries(query: string): Promise<SeriesSearchResult[]>
     error_message?: string;
   };
 
+  // 4. FRED returns 200 with an error_message body for invalid params, etc.
   if (data.error_message) {
     throw new Error(`FRED API error: ${data.error_message}`);
   }
 
-  // Results live at data.seriess (double-s). Empty array is valid — no matches.
+  // 5. Matches live in data.seriess (double-s — FRED API quirk).
+  //    Empty array means no matches; that's valid, not an error.
   if (!data.seriess?.length) {
     return [];
   }
 
+  // 6. Strip each result down to fields the agent needs to pick the right series.
+  //    We use *_short variants for frequency/seasonal_adjustment to save tokens.
   return data.seriess.map((series) => ({
     id: series.id,
     title: series.title,
@@ -126,19 +134,51 @@ export async function searchSeries(query: string): Promise<SeriesSearchResult[]>
  * Also useful as a series_id validator: if data.seriess is empty, the ID doesn't exist.
  */
 export async function getSeriesInfo(seriesId: string): Promise<SeriesInfo> {
-  // TODO: Build the URL with series_id, file_type=json, api_key
+  // 1. Look up a single series by its exact ID (e.g. "UNRATE").
+  const params = new URLSearchParams({
+    series_id: seriesId,
+    file_type: "json",
+    api_key: process.env.FRED_API_KEY ?? "",
+  });
 
-  // TODO: Fetch and parse the response
+  const response = await fetch(
+    `https://api.stlouisfed.org/fred/series?${params}`
+  );
 
-  // TODO: Validate the response — if data.seriess is empty or missing, throw:
-  //   throw new Error(`Series not found: ${seriesId}`)
-  //   This prevents the agent from getting a silent empty result
+  if (!response.ok) {
+    throw new Error(`FRED API error: ${response.status} ${response.statusText}`);
+  }
 
-  // TODO: Return the first (and only) result as SeriesInfo with these fields:
-  //   id, title, frequency, units, seasonal_adjustment, last_updated,
-  //   observation_start, observation_end
+  const data = (await response.json()) as {
+    seriess?: FredSeries[];
+    error_message?: string;
+  };
 
-  throw new Error("getSeriesInfo not yet implemented");
+  if (data.error_message) {
+    throw new Error(`FRED API error: ${data.error_message}`);
+  }
+
+  // 2. FRED returns seriess as an array even for a single lookup.
+  //    Empty array = invalid/guessed series_id — throw so the agent retries via search_series.
+  if (!data.seriess?.length) {
+    throw new Error(`Series not found: ${seriesId}`);
+  }
+
+  const series = data.seriess[0];
+
+  // 3. Return metadata the agent needs before interpreting data values.
+  //    observation_start/end tell the agent the series' full date range;
+  //    last_updated helps flag stale or discontinued series.
+  return {
+    id: series.id,
+    title: series.title,
+    frequency: series.frequency_short,
+    units: series.units,
+    seasonal_adjustment: series.seasonal_adjustment_short,
+    last_updated: series.last_updated,
+    observation_start: series.observation_start,
+    observation_end: series.observation_end,
+  };
 }
 
 /**
@@ -158,23 +198,50 @@ export async function getSeriesData(
   observationStart: string,
   observationEnd?: string
 ): Promise<SeriesObservation[]> {
-  // TODO: Build the URL with:
-  //   - series_id: seriesId
-  //   - observation_start: observationStart
-  //   - observation_end: observationEnd (only if provided)
-  //   - file_type: "json"
-  //   - api_key: process.env.FRED_API_KEY
+  // 1. Build params. observation_start/end filter the *economic time period*
+  //    (not realtime_start/end, which control revision vintages — we ignore those).
+  const params = new URLSearchParams({
+    series_id: seriesId,
+    observation_start: observationStart,
+    file_type: "json",
+    api_key: process.env.FRED_API_KEY ?? "",
+  });
 
-  // TODO: Fetch and parse the response
+  // 2. Only send observation_end when the agent specified one.
+  //    Omitting it lets FRED default to 9999-12-31 (latest available).
+  if (observationEnd) {
+    params.set("observation_end", observationEnd);
+  }
 
-  // TODO: Map each observation to SeriesObservation:
-  //   - date: obs.date (keep as-is, "YYYY-MM-DD")
-  //   - value: obs.value === "." ? null : parseFloat(obs.value)
-  //
-  // Do NOT pass realtime_start or realtime_end to the model — those are
-  // revision tracking fields that add noise without helping the agent reason.
+  const response = await fetch(
+    `https://api.stlouisfed.org/fred/series/observations?${params}`
+  );
 
-  throw new Error("getSeriesData not yet implemented");
+  if (!response.ok) {
+    throw new Error(`FRED API error: ${response.status} ${response.statusText}`);
+  }
+
+  const data = (await response.json()) as {
+    observations?: FredObservation[];
+    error_message?: string;
+  };
+
+  if (data.error_message) {
+    throw new Error(`FRED API error: ${data.error_message}`);
+  }
+
+  if (!data.observations?.length) {
+    throw new Error(`No observations found for series: ${seriesId}`);
+  }
+
+  // 3. Map each observation to { date, value }.
+  //    FRED uses "." for missing/unreleased data — convert to null so the
+  //    agent doesn't try to parse it as a number.
+  //    We drop realtime_start/end from the response; they're revision metadata.
+  return data.observations.map((observation) => ({
+    date: observation.date,
+    value: observation.value === "." ? null : parseFloat(observation.value),
+  }));
 }
 
 /**
@@ -185,16 +252,43 @@ export async function getSeriesData(
  * FRED endpoint: GET /fred/release/series?release_id=...&limit=20
  */
 export async function getRelease(releaseId: string): Promise<ReleaseSeriesResult[]> {
-  // TODO: Build the URL with:
-  //   - release_id: releaseId
-  //   - limit: 20 (cap at 20 to avoid overwhelming the agent with a huge list)
-  //   - file_type: "json"
-  //   - api_key: process.env.FRED_API_KEY
+  // 1. A "release" is a bundle of related series published together
+  //    (e.g. release 21 = Employment Situation → UNRATE, PAYEMS, etc.).
+  const params = new URLSearchParams({
+    release_id: releaseId,
+    limit: "20",
+    file_type: "json",
+    api_key: process.env.FRED_API_KEY ?? "",
+  });
 
-  // TODO: Fetch and parse the response
+  const response = await fetch(
+    `https://api.stlouisfed.org/fred/release/series?${params}`
+  );
 
-  // TODO: Map each result to ReleaseSeriesResult:
-  //   id, title, frequency_short (as frequency), units
+  if (!response.ok) {
+    throw new Error(`FRED API error: ${response.status} ${response.statusText}`);
+  }
 
-  throw new Error("getRelease not yet implemented");
+  const data = (await response.json()) as {
+    seriess?: FredSeries[];
+    error_message?: string;
+  };
+
+  if (data.error_message) {
+    throw new Error(`FRED API error: ${data.error_message}`);
+  }
+
+  // 2. Empty seriess = invalid release_id or no series in the release.
+  if (!data.seriess?.length) {
+    return [];
+  }
+
+  // 3. Return a lightweight list so the agent can browse what's in a release
+  //    without fetching full metadata for every series upfront.
+  return data.seriess.map((series) => ({
+    id: series.id,
+    title: series.title,
+    frequency: series.frequency_short,
+    units: series.units,
+  }));
 }
