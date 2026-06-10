@@ -1,8 +1,9 @@
 "use client";
 
 import { FormEvent, useEffect, useRef, useState } from "react";
-import type { ChatMessage } from "@/lib/chat-types";
+import type { AgentStreamEvent, ChatMessage, ToolCallLog } from "@/lib/chat-types";
 import { MessageBubble } from "./MessageBubble";
+import { ToolCallLog as ToolCallLogPanel } from "./ToolCallLog";
 
 const STARTER_PROMPTS = [
   "What has happened to the federal funds rate since 2020?",
@@ -14,17 +15,43 @@ function createId() {
   return crypto.randomUUID();
 }
 
+async function consumeAgentStream(
+  res: Response,
+  onEvent: (event: AgentStreamEvent) => void
+) {
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("No response body");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      onEvent(JSON.parse(line.slice(6)) as AgentStreamEvent);
+    }
+  }
+}
+
 export function Chat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [liveToolCalls, setLiveToolCalls] = useState<ToolCallLog[]>([]);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isLoading]);
+  }, [messages, isLoading, liveToolCalls]);
 
   async function sendMessage(text: string) {
     const trimmed = text.trim();
@@ -32,6 +59,7 @@ export function Chat() {
 
     setError(null);
     setInput("");
+    setLiveToolCalls([]);
 
     const userMessage: ChatMessage = {
       id: createId(),
@@ -54,17 +82,29 @@ export function Chat() {
         throw new Error(body.error ?? `Request failed (${res.status})`);
       }
 
-      const data = await res.json();
-
-      const assistantMessage: ChatMessage = {
-        id: createId(),
-        role: "assistant",
-        content: data.answer,
-      };
-
-      setMessages((prev) => [...prev, assistantMessage]);
+      await consumeAgentStream(res, (event) => {
+        if (event.type === "tool_call") {
+          setLiveToolCalls((prev) => [
+            ...prev,
+            { tool: event.tool, input: event.input },
+          ]);
+        } else if (event.type === "done") {
+          const assistantMessage: ChatMessage = {
+            id: createId(),
+            role: "assistant",
+            content: event.answer,
+            toolCalls: event.toolCalls,
+          };
+          setMessages((prev) => [...prev, assistantMessage]);
+          setLiveToolCalls([]);
+          setIsLoading(false);
+        } else if (event.type === "error") {
+          throw new Error(event.message);
+        }
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
+      setLiveToolCalls([]);
     } finally {
       setIsLoading(false);
       inputRef.current?.focus();
@@ -119,12 +159,16 @@ export function Chat() {
 
         {isLoading && (
           <div className="flex justify-start">
-            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-              <div className="flex items-center gap-1.5">
-                <span className="h-2 w-2 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.3s]" />
-                <span className="h-2 w-2 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.15s]" />
-                <span className="h-2 w-2 animate-bounce rounded-full bg-slate-400" />
-              </div>
+            <div className="w-full max-w-[85%] rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+              {liveToolCalls.length > 0 ? (
+                <ToolCallLogPanel calls={liveToolCalls} live />
+              ) : (
+                <div className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.3s]" />
+                  <span className="h-2 w-2 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.15s]" />
+                  <span className="h-2 w-2 animate-bounce rounded-full bg-slate-400" />
+                </div>
+              )}
             </div>
           </div>
         )}
