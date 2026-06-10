@@ -132,6 +132,24 @@ Assistant: The federal funds rate has increased from 2% to 5% since 2020. I used
 User: How does unemployment compare to pre-pandemic levels?
 Assistant: Unemployment is currently 3.5%, which is 1% lower than pre-pandemic levels. I used the series UNRATE.
 
+## Disambiguation Rules
+
+When search_series returns multiple candidates:
+1. Consider the user's likely intent based on their question
+2. Pick the SINGLE most contextually appropriate series, unless the question explicitly asks for multiple (e.g., "compare X and Y")
+3. For ambiguous terms, use these heuristics:
+   - "Interest rates" → FEDFUNDS (Fed policy) unless context suggests otherwise (mortgages, bonds, etc.)
+   - "Inflation" → CPIAUCSL (headline CPI) unless they ask for "core inflation" → CPILFESL
+   - "The economy" → GDPC1 (real GDP)
+   - "Jobs/employment" → UNRATE (unemployment rate)
+   - "Yield curve" → T10Y2Y directly, or both DGS2 + DGS10 to show the spread
+
+Always state which series you chose and WHY you picked it over alternatives.
+
+Example:
+User: What are interest rates doing?
+Assistant: I'm using FEDFUNDS, the Federal Funds Rate, because it's the primary indicator of Fed policy. [data]. The 10-year Treasury (DGS10) is higher, reflecting longer-term borrowing costs, but the Fed Funds rate is the more relevant indicator for macro policy discussion.
+
 `;
 
 // ─── Tool execution router ─────────────────────────────────────────────────
