@@ -181,17 +181,30 @@ export async function runFredAgent(question: string): Promise<AgentResult> {
   const toolCalls: AgentResult["toolCalls"] = [];
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
-    // TODO: Call client.messages.create with:
-    //   - model: MODEL
-    //   - max_tokens: 4096
-    //   - system: SYSTEM_PROMPT
-    //   - tools: tools
-    //   - messages: messages
+    const response = await client.messages.create({
+      model: MODEL,
+      max_tokens: 4096,
+      system: SYSTEM_PROMPT,
+      tools: tools,
+      messages: messages,
+    });
 
-    // TODO: Handle stop_reason === "end_turn":
-    //   Extract the text from response.content, return AgentResult
+    // Handle end_turn, which is the end of the agent loop turn - 
+    // i.e. the agent has finished its turn(s) and is ready to return its answer.
 
-    // TODO: Handle stop_reason === "tool_use":
+    if (response.stop_reason === "end_turn") {
+      const answer = response.content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join("");
+    
+      return {
+        answer,
+        toolCalls,  // accumulated from earlier tool_use turns, not []
+        turns: turn + 1, // increment and return the turn count for full agent loop (but not the 'conversation' turn count for the entire user question)
+      };
+    }
+
     //   1. Find all content blocks with type === "tool_use"
     //   2. For each, call runTool(block.name, block.input as Record<string, string>)
     //   3. Log the tool call to toolCalls
@@ -216,26 +229,32 @@ export async function runFredAgent(question: string): Promise<AgentResult> {
     // Reference: nl2sql-nyc lib/sql-agent/run.ts for the exact message format.
     // The pattern is identical — tool results go back as user messages.
 
-    // TODO: Handle unexpected stop reasons with a clear error
+    if (response.stop_reason === "tool_use") {
+      const toolUseBlocks = response.content.filter((block) => block.type === "tool_use");
+    
+      const toolResults = await Promise.all(
+        toolUseBlocks.map((block) =>
+          runTool(block.name, block.input as Record<string, string>)
+        )
+      );
+    
+      messages.push({
+        role: "user",
+        content: toolUseBlocks.map((block, i) => ({
+          type: "tool_result" as const,
+          tool_use_id: block.id,
+          content: toolResults[i],
+        }))
+      });
+    }
 
-    throw new Error("Agent loop not yet implemented");
+    // Handle unexpected stop reasons with a clear error
+
+    if (response.stop_reason !== "tool_use") {
+      throw new Error(`Unexpected stop_reason: ${response.stop_reason}`);
+    }
+
   }
 
   throw new Error(`Agent exceeded maximum turns (${MAX_TURNS})`);
 }
-
-// ─── Quick test (remove before production) ────────────────────────────────
-
-// Uncomment to test from the command line:
-// npx ts-node starter/fred-agent.ts
-//
-// (async () => {
-//   const result = await runFredAgent(
-//     "What has happened to the federal funds rate since 2020?"
-//   );
-//   console.log("\nAnswer:", result.answer);
-//   console.log("\nTool calls made:");
-//   result.toolCalls.forEach(tc =>
-//     console.log(`  ${tc.tool}(${JSON.stringify(tc.input)})`)
-//   );
-// })();
