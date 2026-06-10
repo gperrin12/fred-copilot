@@ -78,19 +78,43 @@ export interface ReleaseSeriesResult {
  * Note: the response field is `seriess` (double-s). Yes, really.
  */
 export async function searchSeries(query: string): Promise<SeriesSearchResult[]> {
-  // TODO: Build the URL with the required parameters:
-  //   - search_text: the query string
-  //   - limit: 10 (enough candidates for the agent to reason over)
-  //   - file_type: "json"
-  //   - api_key: process.env.FRED_API_KEY
+  const params = new URLSearchParams({
+    search_text: query,
+    limit: "10",
+    file_type: "json",
+    api_key: process.env.FRED_API_KEY ?? "",
+  });
 
-  // TODO: Fetch and parse the response
-  // The results live at data.seriess (double-s — this is a known FRED API quirk)
+  const response = await fetch(
+    `https://api.stlouisfed.org/fred/series/search?${params}`
+  );
 
-  // TODO: Map each result to SeriesSearchResult, keeping only the fields the agent needs:
-  //   id, title, frequency_short (as frequency), units, seasonal_adjustment_short (as seasonal_adjustment), popularity
+  if (!response.ok) {
+    throw new Error(`FRED API error: ${response.status} ${response.statusText}`);
+  }
 
-  throw new Error("searchSeries not yet implemented");
+  const data = (await response.json()) as {
+    seriess?: FredSeries[];
+    error_message?: string;
+  };
+
+  if (data.error_message) {
+    throw new Error(`FRED API error: ${data.error_message}`);
+  }
+
+  // Results live at data.seriess (double-s). Empty array is valid — no matches.
+  if (!data.seriess?.length) {
+    return [];
+  }
+
+  return data.seriess.map((series) => ({
+    id: series.id,
+    title: series.title,
+    frequency: series.frequency_short,
+    units: series.units,
+    seasonal_adjustment: series.seasonal_adjustment_short,
+    popularity: series.popularity,
+  }));
 }
 
 /**
