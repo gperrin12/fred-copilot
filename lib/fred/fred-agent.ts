@@ -14,12 +14,15 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
+import type { AgentStreamEvent, ToolCallLog } from "@/lib/chat-types";
 import {
   searchSeries,
   getSeriesInfo,
   getSeriesData,
   getRelease,
 } from "@/lib/fred/fred-tools";
+
+export type AgentCallback = (event: AgentStreamEvent) => void;
 
 const client = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -165,15 +168,19 @@ async function runTool(
 
 export interface AgentResult {
   answer: string;
-  toolCalls: Array<{ tool: string; input: Record<string, unknown> }>;
+  toolCalls: ToolCallLog[];
   turns: number;
 }
 
 /**
  * Run the FRED agent on a user question.
  * Returns the final answer text plus a log of all tool calls made.
+ * Optional onEvent callback fires as the loop runs (tool_call, done).
  */
-export async function runFredAgent(question: string): Promise<AgentResult> {
+export async function runFredAgent(
+  question: string,
+  onEvent?: AgentCallback
+): Promise<AgentResult> {
   const messages: Anthropic.MessageParam[] = [
     { role: "user", content: question },
   ];
@@ -198,11 +205,14 @@ export async function runFredAgent(question: string): Promise<AgentResult> {
         .map((block) => block.text)
         .join("");
     
-      return {
+      const result = {
         answer,
-        toolCalls,  // accumulated from earlier tool_use turns, not []
-        turns: turn + 1, // increment and return the turn count for full agent loop (but not the 'conversation' turn count for the entire user question)
+        toolCalls,
+        turns: turn + 1,
       };
+
+      onEvent?.({ type: "done", ...result });
+      return result;
     }
 
     //   1. Find all content blocks with type === "tool_use"
@@ -236,10 +246,12 @@ export async function runFredAgent(question: string): Promise<AgentResult> {
 
       const toolResults = await Promise.all(
         toolUseBlocks.map(async (block) => {
-          toolCalls.push({
+          const call: ToolCallLog = {
             tool: block.name,
             input: block.input as Record<string, unknown>,
-          });
+          };
+          toolCalls.push(call);
+          onEvent?.({ type: "tool_call", ...call });
           return runTool(block.name, block.input as Record<string, string>);
         })
       );

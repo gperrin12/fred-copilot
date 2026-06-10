@@ -1,4 +1,5 @@
 import type { ChatMessage } from "@/lib/chat-types";
+import { ToolCallLog } from "./ToolCallLog";
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -16,6 +17,11 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             : "border border-slate-200 bg-white text-slate-800 shadow-sm"
         }`}
       >
+        {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
+          <div className="mb-3">
+            <ToolCallLog calls={message.toolCalls} />
+          </div>
+        )}
         <p className="whitespace-pre-wrap">{message.content}</p>
       </div>
     </div>
