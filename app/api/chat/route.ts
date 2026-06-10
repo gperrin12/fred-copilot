@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-// import { runFredAgent } from "@/fred-agent";
+import { runFredAgent } from "@/lib/fred/fred-agent";
 
 export async function POST(req: Request) {
   try {
@@ -12,17 +12,11 @@ export async function POST(req: Request) {
       );
     }
 
-    // Wire up your agent here once fred-tools.ts and fred-agent.ts are ready:
-    //
-    // const result = await runFredAgent(message);
-    // return NextResponse.json({
-    //   answer: result.answer,
-    //   toolCalls: result.toolCalls,
-    // });
+    const result = await runFredAgent(message);
 
     return NextResponse.json({
-      answer: `Stub response — you asked: "${message}"\n\nImplement runFredAgent in fred-agent.ts, then uncomment the import and call in app/api/chat/route.ts.`,
-      toolCalls: [],
+      answer: result.answer,
+      toolCalls: result.toolCalls,
     });
   } catch (err) {
     console.error("[chat]", err);
