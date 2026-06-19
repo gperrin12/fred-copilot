@@ -21,6 +21,8 @@ import {
   getSeriesData,
   getRelease,
 } from "@/lib/fred/fred-tools";
+import { buildEnhancedToolResult } from "@/lib/fred/fred-preprocessor";
+import type { FredObservation } from "@/lib/fred/fred-preprocessor";
 
 export type AgentCallback = (event: AgentStreamEvent) => void;
 
@@ -167,14 +169,38 @@ async function runTool(
       return JSON.stringify(await searchSeries(input.query));
     case "get_series_info":
       return JSON.stringify(await getSeriesInfo(input.series_id));
-    case "get_series_data":
-      return JSON.stringify(
-        await getSeriesData(
-          input.series_id,
-          input.observation_start,
-          input.observation_end
-        )
+    case "get_series_data": {
+      // Fetch raw observations from FRED
+      const rawObservations = await getSeriesData(
+        input.series_id,
+        input.observation_start,
+        input.observation_end
       );
+
+      // Filter out null values (FRED uses "." for missing data)
+      const cleanedObservations: FredObservation[] = rawObservations
+        .filter((obs) => obs.value !== null)
+        .map((obs) => ({
+          date: obs.date,
+          value: obs.value as number,
+        }));
+
+      if (cleanedObservations.length === 0) {
+        return JSON.stringify({
+          error: "No valid observations found (all values were missing data)",
+        });
+      }
+
+      // Get series info to access the title for the preprocessor
+      const seriesInfo = await getSeriesInfo(input.series_id);
+
+      // Pre-process: compute stats, inflection points, format as XML context
+      return buildEnhancedToolResult(
+        input.series_id,
+        seriesInfo.title,
+        cleanedObservations
+      );
+    }
     case "get_release":
       return JSON.stringify(await getRelease(input.release_id));
     default:
